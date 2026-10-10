@@ -1,0 +1,73 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Son of Anton</title>
+<style>
+:root{--bg:#05080d;--p:#0b121b;--l:#16324a;--c:#38e1ff;--t:#cfeaf5;--m:#6d8ba0;--g:#4dffb0;--o:#ffb84d}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#0a1624,#05080d 60%);color:var(--t);font:14px/1.45 ui-monospace,Consolas,monospace;height:100vh;display:grid;grid-template-columns:1.4fr 1fr;gap:10px;padding:10px}
+.col{display:flex;flex-direction:column;gap:10px;min-height:0}.p{background:var(--p);border:1px solid var(--l);border-radius:10px;padding:10px;min-height:0;overflow:auto}
+h3{margin:0 0 6px;color:var(--c);font-size:12px;letter-spacing:2px;text-transform:uppercase}
+#chat{flex:1;display:flex;flex-direction:column}#log{flex:1;overflow:auto}.u{color:var(--g)}.a{color:var(--t)}.s{color:var(--m);font-size:12px}.w{color:var(--o)}
+.row{display:flex;gap:6px;margin-top:8px}input{flex:1;background:#08111a;border:1px solid var(--l);color:var(--t);padding:9px;border-radius:8px;font:inherit}
+button{background:#0d2335;border:1px solid var(--c);color:var(--c);padding:8px 12px;border-radius:8px;cursor:pointer;font:inherit}button.on{background:var(--c);color:#001018}
+.hd{display:flex;align-items:center;gap:12px}.core{width:46px;height:46px;border-radius:50%;border:3px solid var(--c);box-shadow:0 0 18px var(--c),inset 0 0 14px var(--c);animation:pulse 2.4s infinite}
+.core.busy{animation-duration:.6s;border-color:var(--o);box-shadow:0 0 22px var(--o),inset 0 0 14px var(--o)}.core.listen{border-color:var(--g);box-shadow:0 0 22px var(--g),inset 0 0 14px var(--g)}
+@keyframes pulse{50%{transform:scale(.88);opacity:.7}}
+.kv{display:flex;justify-content:space-between;border-bottom:1px solid #112233;padding:2px 0}.kv b{color:var(--c)}
+.m{cursor:pointer;padding:3px 6px;border-radius:6px;border:1px solid transparent}.m:hover{border-color:var(--l)}.m.pin{border-color:var(--c);color:var(--c)}.m.cool{opacity:.4}
+@media(max-width:800px){body{grid-template-columns:1fr;height:auto}}
+</style></head><body>
+<div class="col"><div class="p hd"><div class="core" id="core"></div><div><div style="font-size:18px;color:var(--c)" id="nm">SON OF ANTON</div><div class="s" id="sub">connecting…</div></div></div>
+<div class="p" id="chat"><h3>Conversation</h3><div id="log"></div>
+<div class="row"><input id="in" placeholder="Type, or say &quot;son of anton … over&quot; with the mic on" autocomplete="off"><button id="mic">🎤 Mic</button><button id="spk" class="on">🔊</button></div><div class="s"><label><input type="checkbox" id="wk" checked style="flex:none;width:auto"> need wake word (“anton … over”)</label> <span id="live"></span></div></div>
+<div class="p" style="max-height:26vh"><h3>Activity</h3><div id="act"></div></div></div>
+<div class="col"><div class="p"><h3>Status</h3><div id="st"></div></div>
+<div class="p"><h3>Cloud models (click to pin · again for auto)</h3><div id="models"></div></div>
+<div class="p"><h3>Keys · Test · Update</h3><div class="row" style="margin:0"><select id="kn" style="background:#08111a;color:#cfeaf5;border:1px solid #16324a;border-radius:8px"><option>KILO_API_KEY</option><option>GROQ_API_KEY</option><option>NVIDIA_API_KEY</option><option>OPENROUTER_API_KEY</option><option>GITHUB_TOKEN</option></select><input id="kv" type="password" placeholder="paste key"><button id="ks">Save</button></div>
+<div class="row"><button id="tst">Test connections</button><button id="upd">Update now</button></div><pre class="s" id="tr" style="white-space:pre-wrap;margin:6px 0 0"></pre><div class="s" id="ky"></div></div>
+<div class="p"><h3>Phone mic</h3><div class="s" id="ph" style="word-break:break-all"></div></div>
+<div class="p"><h3>Brain</h3><div id="brain"></div>
+<div class="row"><input id="fp" placeholder="instant phrase"><input id="fr" placeholder="instant reply"><button id="fa">Add</button></div></div></div>
+<script src="/voice.js"></script>
+<script>
+const $=id=>document.getElementById(id);let ws,rec=null,listenT,needWake=true;
+function add(cls,txt){const d=document.createElement('div');d.className=cls;d.textContent=txt;$('log').appendChild(d);$('log').scrollTop=1e9}
+function act(txt){const d=document.createElement('div');d.className='s';d.textContent=new Date().toLocaleTimeString()+' '+txt;$('act').prepend(d);while($('act').children.length>40)$('act').lastChild.remove()}
+const say=t=>Voice.say(t);
+function connect(){ws=new WebSocket((location.protocol=='https:'?'wss':'ws')+'://'+location.host+'/ws');
+ws.onclose=()=>{$('sub').textContent='reconnecting…';setTimeout(connect,2000)};
+ws.onmessage=e=>{const d=JSON.parse(e.data);
+if(d.type=='stt')act('🎧 '+d.who+': '+d.text);
+if(d.type=='user')add('u','› '+d.who+': '+d.text);
+if(d.type=='reply'){add('a','‹ '+d.text);if(d.to=='dashboard'||d.to=='pc'||d.to=='all')say(d.text);if(d.route!='notify')act(d.route+' '+d.ms+'ms');$('core').className='core'}
+if(d.type=='ack'){if(d.to=='dashboard'||d.to=='pc')say(d.text);$('core').className='core busy'}
+if(d.type=='wake'){$('core').className='core listen';act('wake word from '+d.who);clearTimeout(listenT);listenT=setTimeout(()=>$('core').className='core',40000)}
+if(d.type=='heard'){act('heard: '+d.text);$('core').className='core busy'}
+if(d.type=='step')act('⚙ '+d.tool+' '+JSON.stringify(d.args).slice(0,80));
+if(d.type=='step_result')act('  ↳ '+d.result.slice(0,100));
+if(d.type=='improve')act('🧠 self-improve '+d.job+' '+d.status+(d.result?': '+d.result:''));
+if(d.type=='idle')$('sub').dataset.i=1;if(d.type=='idle')$('sub').textContent='online · idle '+d.seconds+'s'+(d.improving?' · improving: '+d.improving:'')}}
+async function post(a,b){await fetch('/api/'+a,{method:'POST',body:JSON.stringify(b)});refresh()}
+async function refresh(){const s=await (await fetch('/api/state')).json();
+$('nm').textContent=s.name.toUpperCase();
+const st=s.stats,tot=st.instant+st.local+st.cloud+st.agent||1;
+$('st').innerHTML=[['Local brain',(s.local.ok?'✅ ':'⏳ ')+s.local_status+' · '+s.local.model],['Voice',s.voice],['Version',s.version+' · '+s.update.msg],['Last cloud model',s.last_model||'-'],['Avg reply',s.avg_ms+' ms'],
+['Instant / local / cloud / agent',`${st.instant} / ${st.local} / ${st.cloud} / ${st.agent}`],['Tools · skills learned',s.tools+' · '+s.skills.length],['Uptime',Math.floor(s.uptime/60)+' min']].map(([k,v])=>`<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('')+
+`<div class="row"><button id="si" class="${s.self_improve?'on':''}">Self-improve: ${s.self_improve?'ON':'OFF'}</button></div>`;
+$('si').onclick=()=>post('improve',{on:!s.self_improve});
+$('models').innerHTML=s.models.length?s.models.map(m=>`<div class="m ${m.pinned?'pin':''} ${m.cooling?'cool':''}" data-id="${m.id}">${m.pinned?'📌 ':''}${m.vision===true?'👁 ':''}${m.provider} · ${m.model}${m.cooling?' (cooling '+m.cooling+'s)':''}</div>`).join(''):'<span class="w">No keys yet. Put free API keys in .env and restart.</span>';
+document.querySelectorAll('.m').forEach(e=>e.onclick=()=>post('model',{id:e.classList.contains('pin')?null:e.dataset.id}));
+$('ky').textContent='Keys: '+Object.entries(s.keys).map(([k,v])=>(v?'✅ ':'❌ ')+k.replace('_API_KEY','')).join('  ');
+$('ph').innerHTML='Open on your phone (same Wi‑Fi/hotspot):<br>'+s.phone_url;
+const L=(t,a)=>a.length?`<div class="s" style="margin-top:6px">${t}</div>`+a.map(x=>`<div>• ${x}</div>`).join(''):'';
+$('brain').innerHTML=L('Facts I know',s.facts.map(f=>f.text))+L('Habits',s.habits.filter(h=>h.count>1).map(h=>`"${h.phrase}" ×${h.count}${h.hard?' (hard-coded)':h.cached?' (instant)':''}`))+L('Skills',s.skills)+L('Notes studied',s.notes.map(n=>n.text.slice(0,90)))+L('Self-improve log',s.cycles.map(c=>c.text));
+if(!$('log').children.length)s.convo.forEach(m=>add(m.role=='user'?'u':'a',(m.role=='user'?'› ':'‹ ')+m.text))}
+$('in').onkeydown=e=>{if(e.key=='Enter'&&e.target.value.trim()){ws.send(JSON.stringify({type:'say',text:e.target.value,who:'dashboard'}));e.target.value=''}};
+$('spk').onclick=()=>{Voice.on=!Voice.on;$('spk').className=Voice.on?'on':'';if(!Voice.on)Voice.stop()};
+$('wk').onchange=e=>needWake=e.target.checked;
+$('fa').onclick=()=>{if($('fp').value&&$('fr').value){post('fast',{phrase:$('fp').value,reply:$('fr').value});$('fp').value=$('fr').value=''}};
+$('mic').onclick=()=>{Voice.audio.play().catch(()=>{});if(rec){rec.stop();rec=null;$('mic').className='';$('sub').textContent='mic off';return}
+rec=startMic(t=>{if(needWake)ws.send(JSON.stringify({type:'stt',text:t,who:'pc'}));else ws.send(JSON.stringify({type:'say',text:t,who:'pc'}))},m=>{if(m[0]=='…')$('live').textContent=m;else act(m)});if(rec)$('mic').className='on'};
+$('tst').onclick=async()=>{$('tr').textContent='testing…';const r=await (await fetch('/api/test',{method:'POST',body:'{}'})).json();$('tr').textContent=r.lines.join('\n')};
+$('upd').onclick=async()=>{$('tr').textContent='checking…';const r=await (await fetch('/api/update',{method:'POST',body:JSON.stringify({apply:true})})).json();$('tr').textContent=r.msg};
+$('ks').onclick=async()=>{const e=$('kn').value,v=$('kv').value.trim();if(!v)return;await post('keys',{env:e,value:v});$('kv').value='';$('tr').textContent=e+' saved (kept across updates). Press Test.'};
+connect();refresh();setInterval(refresh,6000);
+</script></body></html>

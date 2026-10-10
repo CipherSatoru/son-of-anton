@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Anton Mic</title><style>
+body{margin:0;background:#05080d;color:#cfeaf5;font:16px system-ui;display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px;min-height:100vh}
+input{background:#08111a;border:1px solid #16324a;color:#cfeaf5;padding:10px;border-radius:8px;font:inherit;text-align:center}
+#b{width:170px;height:170px;border-radius:50%;border:4px solid #38e1ff;background:#0b121b;color:#38e1ff;font-size:18px}
+#b.on{background:#38e1ff;color:#001018;box-shadow:0 0 30px #38e1ff}#b.listen{border-color:#4dffb0;box-shadow:0 0 30px #4dffb0}
+#s{color:#6d8ba0;text-align:center;min-height:2em}#t{width:100%;max-width:420px;color:#9fd}</style></head><body>
+<div>Son of Anton · phone mic</div><input id="n" placeholder="your name (e.g. sam)">
+<button id="b">TAP TO START</button><div id="s">Say "son of anton … over"</div><div id="t"></div>
+<script src="/voice.js"></script>
+<script>
+const $=id=>document.getElementById(id);$('n').value=localStorage.n||'phone';let rec=null,ws;
+function send(o){if(ws&&ws.readyState==1)ws.send(JSON.stringify(o))}
+function conn(){ws=new WebSocket('wss://'+location.host+'/ws');ws.onclose=()=>setTimeout(conn,2000);
+ws.onmessage=e=>{const d=JSON.parse(e.data),me=$('n').value||'phone';
+if(d.type=='wake'&&d.who==me){$('b').classList.add('listen');$('s').textContent='Listening… say "over" when done';navigator.vibrate&&navigator.vibrate(60)}
+if(d.type=='heard'&&d.who==me){$('b').classList.remove('listen');$('s').textContent='Heard: '+d.text}
+if((d.type=='reply'||d.type=='ack')&&(d.to==me||d.to=='all')){$('t').textContent=d.text;Voice.say(d.text)}}}
+$('b').onclick=async()=>{Voice.audio.play().catch(()=>{});
+if(rec){rec.stop();rec=null;$('b').className='';$('b').textContent='TAP TO START';return}
+localStorage.n=$('n').value;try{await navigator.wakeLock.request('screen')}catch(_){}
+rec=startMic(t=>send({type:'stt',text:t,who:$('n').value||'phone'}),m=>{if(m[0]!='…')$('s').textContent=m;else $('t').textContent=m});
+if(rec){$('b').className='on';$('b').textContent='LISTENING'}};
+conn();
+</script></body></html>
