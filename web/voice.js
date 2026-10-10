@@ -9,12 +9,18 @@ const Voice={on:true,q:[],busy:false,until:0,audio:new Audio(),
   catch(e){await this.fallback(t)}
   this.busy=false;this.until=Date.now()+700;this.pump()},
  fallback(t){return new Promise(res=>{if(!window.speechSynthesis)return res();const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));
-  const u=new SpeechSynthesisUtterance(t);u.voice=vs.find(v=>/male|david|guy|mark|daniel|george|ryan|james|alex/i.test(v.name)&&!/female|zira|hazel|susan/i.test(v.name))||null;u.pitch=.8;u.rate=1.05;
+  const u=new SpeechSynthesisUtterance(t);const mv=vs.find(v=>/male|david|guy|mark|daniel|george|ryan|james|alex/i.test(v.name)&&!/female|zira|hazel|susan/i.test(v.name));
+  u.voice=mv||null;u.pitch=mv?.85:.5;u.rate=1.0;
   u.onend=u.onerror=res;setTimeout(res,20000);speechSynthesis.speak(u)})}};
-// continuous mic with visible errors, auto-restart, no deadlocks
+// continuous mic with visible errors, auto-restart, no deadlocks.
+// Asks the engine for 5 alternative transcripts and prefers the one that contains the wake word ("anton"),
+// so a mishearing like "Anthony" in the top guess doesn't kill the wake-up.
 function startMic(onFinal,onMsg){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){onMsg('Browser has no speech recognition. Use Chrome/Edge.');return null}
  const h={on:true,r:null,stop(){this.on=false;try{this.r.abort()}catch(_){}}};
- const go=()=>{if(!h.on)return;const r=h.r=new SR();r.continuous=true;r.interimResults=true;r.lang='en-US';
-  r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){const x=e.results[i][0].transcript;if(!e.results[i].isFinal){onMsg('… '+x);continue}if(!Voice.speaking())onFinal(x.trim())}};
+ const WAKE=/\b(ant[h]?on\w*|and ?ton|an ton|aunt on|sonofanton)\b/i;
+ const go=()=>{if(!h.on)return;const r=h.r=new SR();r.continuous=true;r.interimResults=true;r.maxAlternatives=5;r.lang='en-US';
+  r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){const res=e.results[i];let x=res[0].transcript;if(!res.isFinal){onMsg('… '+x);continue}
+   for(let k=0;k<res.length;k++){if(WAKE.test(res[k].transcript)){x=res[k].transcript;break}}
+   if(!Voice.speaking())onFinal(x.trim())}};
   r.onerror=e=>{onMsg('mic error: '+e.error);if(e.error=='not-allowed'||e.error=='service-not-allowed'){h.on=false;onMsg('Mic blocked. Allow the microphone for this site (lock icon in the address bar).')}};
   r.onend=()=>{if(h.on)setTimeout(go,250)};try{r.start()}catch(_){setTimeout(go,500)}};go();return h}
