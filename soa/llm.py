@@ -170,6 +170,7 @@ class Local:
         self.c = cfg["local"]
         self.model = self.c["model"]
         self.ok, self.fails, self.status = False, 0, "starting"
+        self.err = None
         self._pull = None
 
     async def _tags(self):
@@ -219,8 +220,12 @@ class Local:
             r = await cl.post(self.c["url"] + "/api/chat", json={
                 "model": self.model, "messages": messages, "stream": False, "keep_alive": self.c["keep_alive"],
                 "options": {"num_predict": max_tokens, "temperature": 0.7, "num_ctx": 2048}})
-            txt = strip_think(r.json()["message"]["content"])
-            self.fails = 0
+            j = r.json()
+            if r.status_code != 200 or "message" not in j:
+                self.err = str(j.get("error") or f"HTTP {r.status_code}")[:160]
+                raise RuntimeError(self.err)
+            txt = strip_think(j["message"]["content"])
+            self.fails, self.err = 0, None
             return txt
 
     def failed(self):

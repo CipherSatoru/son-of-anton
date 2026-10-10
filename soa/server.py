@@ -130,7 +130,7 @@ class Server:
             "phone_url": f"https://{self.ip}:{self.cfg['tls_port']}/phone?token={self.token}",
             "convo": self.store.recent(30),
             "self_improve": self.cfg["self_improve"]["enabled"], "version": config.version(), "update": self.upd,
-            "local_status": self.local.status, "pc_mic": self.pc_mic, "voice": self.cfg["tts"]["voice"],
+            "local_status": self.local.status + (f" · last error: {self.local.err}" if getattr(self.local, "err", None) else ""), "pc_mic": self.pc_mic, "voice": self.cfg["tts"]["voice"],
             "keys": {k: bool(os.environ.get(k)) for k in self.key_names()},
         }
 
@@ -207,6 +207,10 @@ class Server:
             lines = await self.cloud.test()
             await self.local.check()
             lines.append(f"local: {self.local.status} ({self.local.model})")
+            try:
+                lines.append("local chat: OK -> " + (await self.local.chat([{"role": "user", "content": "Reply with the single word: ready"}], 8)))
+            except Exception as e:
+                lines.append(f"local chat: FAILED -> {type(e).__name__}: {e}")
             lines.append("update: " + (await self.do_update(False))["msg"])
             return web.json_response({"lines": lines})
         elif act == "update":

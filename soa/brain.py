@@ -24,6 +24,7 @@ class Brain:
         self.agent = Agent(cfg, store, cloud, bus)
         self.busy = 0
         self._lc = 0
+        self._down = 0.0
         self.stats = {"instant": 0, "local": 0, "cloud": 0, "agent": 0, "ms": []}
 
     def is_task(self, text):
@@ -75,6 +76,17 @@ class Brain:
                 pass
         return bool(getattr(self.local, "ok", False))
 
+    def _lfail(self, e):
+        try:
+            self.local.err = f"{type(e).__name__}: {e}"[:160]
+        except Exception:
+            pass
+        self.local.failed()
+
+    def _why(self):
+        e = getattr(self.local, "err", None)
+        return f" (local error: {e})" if e else ""
+
     async def _offline(self, text):
         """Cloud/internet unavailable: answer with the local model, honestly."""
         if not await self._ensure_local():
@@ -82,8 +94,8 @@ class Brain:
         try:
             msgs = [{"role": "system", "content": PERSONA.split(" If the user")[0] + OFFLINE + self._facts()}] + self._hist()
             return (await self.local.chat(msgs)) or None
-        except Exception:
-            self.local.failed()
+        except Exception as e:
+            self._lfail(e)
             return None
 
     async def _agent(self, text, src):
@@ -91,12 +103,17 @@ class Brain:
         try:
             return await self.agent.run(text, src), "agent"
         except Exception:
+            self._down = time.time() + 30
             r = await self._offline(text)
             if r:
                 return "Offline, so no heavy lifting right now. " + r, "local"
             raise
 
     async def _chat(self, text, src):
+        if time.time() < self._down:          # internet known to be down: don't bother escalating to the cloud
+            r = await self._offline(text)
+            if r:
+                return r, "local"
         if await self._ensure_local():
             try:
                 msgs = [{"role": "system", "content": PERSONA + self._facts()}] + self._hist()
@@ -104,21 +121,22 @@ class Brain:
                 if r and not r.upper().startswith("ESCALATE"):
                     self.fast.learn(text, r)
                     return r, "local"
-            except Exception:
-                self.local.failed()
+            except Exception as e:
+                self._lfail(e)
             if self.cloud.ready:
                 try:
                     return await self._cloud_chat(text)
                 except Exception:
-                    pass
+                    self._down = time.time() + 30
             r = await self._offline(text)
             if r:
                 return r, "local"
-            return "I'm offline and couldn't work that one out locally. Try again when the internet is back.", "error"
+            return "I'm offline and my local brain couldn't answer" + self._why() + ". Try again in a moment.", "error"
         if self.cloud.ready:
             try:
                 return await self._cloud_chat(text)
             except Exception:
+                self._down = time.time() + 30
                 return f"I'm offline and my local brain isn't ready yet ({getattr(self.local, 'status', '?')}). Give it a minute or reconnect.", "error"
         return "I've got no brain online yet. Add an API key in the dashboard, or let the local brain finish setting up.", "error"
 
