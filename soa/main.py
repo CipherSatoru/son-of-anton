@@ -1,5 +1,5 @@
 import asyncio, os, sys, webbrowser
-from . import config, tools, tray
+from . import config, offline, tools, tray
 from .bus import Bus
 from .store import Store
 from .llm import Cloud, Local
@@ -44,9 +44,19 @@ async def amain(open_browser=True, use_tray=False):
         sp = Speaker()
         emit = bus.emit
         bus.emit = lambda t, **k: (sp.say(k["text"]) if t == "reply" and k.get("to") in ("dashboard", "pc", "all") else None, emit(t, **k))[1]
-    if cfg["pc_mic"] or (config.DATA / "vosk").exists():
+    def start_pcmic():
+        if srv.pc_mic:
+            return
         srv.pc_mic = True
-        PcMic(lambda t: loop.call_soon_threadsafe(srv.on_speech, "pc", t), print).start()
+        PcMic(lambda t: loop.call_soon_threadsafe(srv.on_pc_speech, t), print).start()
+
+    if cfg["pc_mic"] or (config.DATA / "vosk").exists():
+        start_pcmic()
+
+    async def offline_setup():
+        await offline.ensure(print)
+        if (config.DATA / "vosk").exists():
+            start_pcmic()
 
     async def boot():
         await cloud.refresh()
@@ -61,7 +71,7 @@ async def amain(open_browser=True, use_tray=False):
             while True:
                 r = await srv.do_update(True)
                 await asyncio.sleep(cfg["update"]["check_minutes"] * 60)
-    tasks = [asyncio.create_task(boot()), asyncio.create_task(improver.loop()), asyncio.create_task(local.keepalive())]
+    tasks = [asyncio.create_task(boot()), asyncio.create_task(improver.loop()), asyncio.create_task(local.keepalive()), asyncio.create_task(offline_setup())]
 
     async def periodic():
         while True:

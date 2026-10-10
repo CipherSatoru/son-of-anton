@@ -13,12 +13,17 @@ PERSONA = ("You are Son of Anton, a sharp, dry-witted, loyal AI sidekick living 
            "reply with exactly the single word: ESCALATE")
 
 
+OFFLINE = (" You are currently OFFLINE: the internet and cloud models are unreachable, so you can't do heavy tasks, look things up or use "
+           "current info right now. Answer briefly from what you know; if it needs internet, say so honestly in one sentence.")
+
+
 class Brain:
     def __init__(self, cfg, store, cloud, local, bus):
         self.cfg, self.store, self.cloud, self.local, self.bus = cfg, store, cloud, local, bus
         self.fast = FastPath(store, cfg)
         self.agent = Agent(cfg, store, cloud, bus)
         self.busy = 0
+        self._lc = 0
         self.stats = {"instant": 0, "local": 0, "cloud": 0, "agent": 0, "ms": []}
 
     def is_task(self, text):
@@ -58,12 +63,41 @@ class Brain:
         self.bus.emit("reply", to=src, text=reply, route=route, ms=ms)
         return reply
 
+    async def _ensure_local(self):
+        if getattr(self.local, "ok", False):
+            return True
+        chk = getattr(self.local, "check", None)
+        if chk and time.time() - self._lc > 20:
+            self._lc = time.time()
+            try:
+                await asyncio.wait_for(chk(), 20)
+            except Exception:
+                pass
+        return bool(getattr(self.local, "ok", False))
+
+    async def _offline(self, text):
+        """Cloud/internet unavailable: answer with the local model, honestly."""
+        if not await self._ensure_local():
+            return None
+        try:
+            msgs = [{"role": "system", "content": PERSONA.split(" If the user")[0] + OFFLINE + self._facts()}] + self._hist()
+            return (await self.local.chat(msgs)) or None
+        except Exception:
+            self.local.failed()
+            return None
+
     async def _agent(self, text, src):
         self.bus.emit("ack", to=src, text="On it.")
-        return await self.agent.run(text, src), "agent"
+        try:
+            return await self.agent.run(text, src), "agent"
+        except Exception:
+            r = await self._offline(text)
+            if r:
+                return "Offline, so no heavy lifting right now. " + r, "local"
+            raise
 
     async def _chat(self, text, src):
-        if self.local.ok:
+        if await self._ensure_local():
             try:
                 msgs = [{"role": "system", "content": PERSONA + self._facts()}] + self._hist()
                 r = await self.local.chat(msgs)
@@ -73,11 +107,20 @@ class Brain:
             except Exception:
                 self.local.failed()
             if self.cloud.ready:
-                return await self._cloud_chat(text)
-            return "My local brain is warming up, give me a few seconds.", "error"
+                try:
+                    return await self._cloud_chat(text)
+                except Exception:
+                    pass
+            r = await self._offline(text)
+            if r:
+                return r, "local"
+            return "I'm offline and couldn't work that one out locally. Try again when the internet is back.", "error"
         if self.cloud.ready:
-            return await self._cloud_chat(text)
-        return "I've got no brain online yet. Add an API key to .env or install Ollama.", "error"
+            try:
+                return await self._cloud_chat(text)
+            except Exception:
+                return f"I'm offline and my local brain isn't ready yet ({getattr(self.local, 'status', '?')}). Give it a minute or reconnect.", "error"
+        return "I've got no brain online yet. Add an API key in the dashboard, or let the local brain finish setting up.", "error"
 
     async def _cloud_chat(self, text):
         msgs = [{"role": "system", "content": PERSONA.split(" If the user")[0] + self._facts()}] + self._hist()

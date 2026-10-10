@@ -14,11 +14,24 @@ button{background:#0d2335;border:1px solid var(--c);color:var(--c);padding:8px 1
 .kv{display:flex;justify-content:space-between;border-bottom:1px solid #112233;padding:2px 0}.kv b{color:var(--c)}
 .m{cursor:pointer;padding:3px 6px;border-radius:6px;border:1px solid transparent}.m:hover{border-color:var(--l)}.m.pin{border-color:var(--c);color:var(--c)}.m.cool{opacity:.4}
 @media(max-width:800px){body{grid-template-columns:1fr;height:auto}}
+body{grid-template-columns:minmax(0,1.7fr) minmax(0,1fr)}
+body.focus{grid-template-columns:1fr}body.focus .col:last-child{display:none}
+#chat{min-height:62vh;padding:12px}
+.chh{display:flex;align-items:center;gap:6px;margin-bottom:8px}.chh .sp{flex:1}
+#log{display:flex;flex-direction:column;gap:8px;font-size:var(--fs,15px);padding:4px 2px}
+.msg{max-width:88%;display:flex;flex-direction:column}.msg.u{align-self:flex-end;align-items:flex-end}.msg.a{align-self:flex-start}
+.msg .b{padding:9px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word;line-height:1.5}
+.msg.u .b{background:#0f3a2c;border:1px solid #1c6b50;color:#d9ffee}.msg.a .b{background:#0d2335;border:1px solid var(--l);color:var(--t)}
+.msg .ts{font-size:10px;color:var(--m);margin:2px 4px}
+textarea{flex:1;background:#08111a;border:1px solid var(--l);color:var(--t);padding:9px;border-radius:8px;font:inherit;font-size:var(--fs,15px);resize:vertical;min-height:46px;max-height:30vh}
+.col2{display:flex;flex-direction:column;gap:6px}
+#typing{min-height:18px;color:var(--o)}
+button.sm{padding:4px 8px;font-size:12px}
 </style></head><body>
 <div class="col"><div class="p hd"><div class="core" id="core"></div><div><div style="font-size:18px;color:var(--c)" id="nm">SON OF ANTON</div><div class="s" id="sub">connecting…</div></div></div>
-<div class="p" id="chat"><h3>Conversation</h3><div id="log"></div>
-<div class="row"><input id="in" placeholder="Type, or say &quot;son of anton … over&quot; with the mic on" autocomplete="off"><button id="mic">🎤 Mic</button><button id="spk" class="on">🔊</button></div><div class="s"><label><input type="checkbox" id="wk" checked style="flex:none;width:auto"> need wake word (“anton … over”)</label> <span id="live"></span></div></div>
-<div class="p" style="max-height:26vh"><h3>Activity</h3><div id="act"></div></div></div>
+<div class="p" id="chat"><div class="chh"><h3 style="margin:0">Conversation</h3><span class="sp"></span><button class="sm" id="fz-" title="smaller text">A-</button><button class="sm" id="fz+" title="bigger text">A+</button><button class="sm" id="foc" title="hide the side panels">&#9974; Focus</button><button class="sm" id="exp" title="save chat as a text file">&#11015; Save</button><button class="sm" id="clr" title="delete the whole conversation">&#128465; Clear</button></div><div id="log"></div><div id="typing"></div>
+<div class="row"><textarea id="in" rows="2" placeholder="Type here (Enter = send, Shift+Enter = new line) or say &quot;son of anton ... over&quot; with the mic on" autocomplete="off"></textarea><div class="col2"><button id="send">Send &#10148;</button><button id="mic">&#127908; Mic</button><button id="spk" class="on">&#128266;</button></div></div><div class="s"><label><input type="checkbox" id="wk" checked style="flex:none;width:auto"> need wake word (&ldquo;anton ... over&rdquo;)</label> <span id="live"></span></div></div>
+<div class="p" style="max-height:26vh"><div class="chh"><h3 style="margin:0">Activity</h3><span class="sp"></span><button class="sm" id="aclr">Clear</button></div><div id="act"></div></div></div>
 <div class="col"><div class="p"><h3>Status</h3><div id="st"></div></div>
 <div class="p"><h3>Cloud models (click to pin · again for auto)</h3><div id="models"></div></div>
 <div class="p"><h3>Keys · Test · Update</h3><div class="row" style="margin:0"><select id="kn" style="background:#08111a;color:#cfeaf5;border:1px solid #16324a;border-radius:8px"><option>KILO_API_KEY</option><option>GROQ_API_KEY</option><option>NVIDIA_API_KEY</option><option>OPENROUTER_API_KEY</option><option>GITHUB_TOKEN</option></select><input id="kv" type="password" placeholder="paste key"><button id="ks">Save</button></div>
@@ -29,15 +42,15 @@ button{background:#0d2335;border:1px solid var(--c);color:var(--c);padding:8px 1
 <script src="/voice.js"></script>
 <script>
 const $=id=>document.getElementById(id);let ws,rec=null,listenT,needWake=true;
-function add(cls,txt){const d=document.createElement('div');d.className=cls;d.textContent=txt;$('log').appendChild(d);$('log').scrollTop=1e9}
+function add(cls,txt){const d=document.createElement('div');d.className='msg '+cls;const b=document.createElement('div');b.className='b';b.textContent=txt;const t=document.createElement('div');t.className='ts';t.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});d.append(b,t);$('log').appendChild(d);$('log').scrollTop=1e9}
 function act(txt){const d=document.createElement('div');d.className='s';d.textContent=new Date().toLocaleTimeString()+' '+txt;$('act').prepend(d);while($('act').children.length>40)$('act').lastChild.remove()}
 const say=t=>Voice.say(t);
 function connect(){ws=new WebSocket((location.protocol=='https:'?'wss':'ws')+'://'+location.host+'/ws');
 ws.onclose=()=>{$('sub').textContent='reconnecting…';setTimeout(connect,2000)};
 ws.onmessage=e=>{const d=JSON.parse(e.data);
 if(d.type=='stt')act('🎧 '+d.who+': '+d.text);
-if(d.type=='user')add('u','› '+d.who+': '+d.text);
-if(d.type=='reply'){add('a','‹ '+d.text);if(d.to=='dashboard'||d.to=='pc'||d.to=='all')say(d.text);if(d.route!='notify')act(d.route+' '+d.ms+'ms');$('core').className='core'}
+if(d.type=='user'){add('u',d.text);$('typing').textContent='Anton is thinking…'}
+if(d.type=='reply'){add('a',d.text);$('typing').textContent='';if(d.to=='dashboard'||d.to=='pc'||d.to=='all')say(d.text);if(d.route!='notify')act(d.route+' '+d.ms+'ms');$('core').className='core'}
 if(d.type=='ack'){if(d.to=='dashboard'||d.to=='pc')say(d.text);$('core').className='core busy'}
 if(d.type=='wake'){$('core').className='core listen';act('wake word from '+d.who);clearTimeout(listenT);listenT=setTimeout(()=>$('core').className='core',40000)}
 if(d.type=='heard'){act('heard: '+d.text);$('core').className='core busy'}
@@ -49,7 +62,7 @@ async function post(a,b){await fetch('/api/'+a,{method:'POST',body:JSON.stringif
 async function refresh(){const s=await (await fetch('/api/state')).json();
 $('nm').textContent=s.name.toUpperCase();
 const st=s.stats,tot=st.instant+st.local+st.cloud+st.agent||1;
-$('st').innerHTML=[['Local brain',(s.local.ok?'✅ ':'⏳ ')+s.local_status+' · '+s.local.model],['Voice',s.voice],['Version',s.version+' · '+s.update.msg],['Last cloud model',s.last_model||'-'],['Avg reply',s.avg_ms+' ms'],
+$('st').innerHTML=[['Local brain',(s.local.ok?'✅ ':'⏳ ')+s.local_status+' · '+s.local.model],['Voice',s.voice],['Offline mic (PC)',s.pc_mic?'✅ on':'⏳ setting up (needs a one-time download)'],['Version',s.version+' · '+s.update.msg],['Last cloud model',s.last_model||'-'],['Avg reply',s.avg_ms+' ms'],
 ['Instant / local / cloud / agent',`${st.instant} / ${st.local} / ${st.cloud} / ${st.agent}`],['Tools · skills learned',s.tools+' · '+s.skills.length],['Uptime',Math.floor(s.uptime/60)+' min']].map(([k,v])=>`<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('')+
 `<div class="row"><button id="si" class="${s.self_improve?'on':''}">Self-improve: ${s.self_improve?'ON':'OFF'}</button></div>`;
 $('si').onclick=()=>post('improve',{on:!s.self_improve});
@@ -59,8 +72,7 @@ $('ky').textContent='Keys: '+Object.entries(s.keys).map(([k,v])=>(v?'✅ ':'❌ 
 $('ph').innerHTML='Open on your phone (same Wi‑Fi/hotspot):<br>'+s.phone_url;
 const L=(t,a)=>a.length?`<div class="s" style="margin-top:6px">${t}</div>`+a.map(x=>`<div>• ${x}</div>`).join(''):'';
 $('brain').innerHTML=L('Facts I know',s.facts.map(f=>f.text))+L('Habits',s.habits.filter(h=>h.count>1).map(h=>`"${h.phrase}" ×${h.count}${h.hard?' (hard-coded)':h.cached?' (instant)':''}`))+L('Skills',s.skills)+L('Notes studied',s.notes.map(n=>n.text.slice(0,90)))+L('Self-improve log',s.cycles.map(c=>c.text));
-if(!$('log').children.length)s.convo.forEach(m=>add(m.role=='user'?'u':'a',(m.role=='user'?'› ':'‹ ')+m.text))}
-$('in').onkeydown=e=>{if(e.key=='Enter'&&e.target.value.trim()){ws.send(JSON.stringify({type:'say',text:e.target.value,who:'dashboard'}));e.target.value=''}};
+if(!$('log').children.length)s.convo.forEach(m=>add(m.role=='user'?'u':'a',m.text))}
 $('spk').onclick=()=>{Voice.on=!Voice.on;$('spk').className=Voice.on?'on':'';if(!Voice.on)Voice.stop()};
 $('wk').onchange=e=>needWake=e.target.checked;
 $('fa').onclick=()=>{if($('fp').value&&$('fr').value){post('fast',{phrase:$('fp').value,reply:$('fr').value});$('fp').value=$('fr').value=''}};
@@ -69,5 +81,13 @@ rec=startMic(t=>{if(needWake)ws.send(JSON.stringify({type:'stt',text:t,who:'pc'}
 $('tst').onclick=async()=>{$('tr').textContent='testing…';const r=await (await fetch('/api/test',{method:'POST',body:'{}'})).json();$('tr').textContent=r.lines.join('\n')};
 $('upd').onclick=async()=>{$('tr').textContent='checking…';const r=await (await fetch('/api/update',{method:'POST',body:JSON.stringify({apply:true})})).json();$('tr').textContent=r.msg};
 $('ks').onclick=async()=>{const e=$('kn').value,v=$('kv').value.trim();if(!v)return;await post('keys',{env:e,value:v});$('kv').value='';$('tr').textContent=e+' saved (kept across updates). Press Test.'};
+let fs=+localStorage.getItem('fs')||15;const setfs=()=>{document.documentElement.style.setProperty('--fs',fs+'px');localStorage.setItem('fs',fs)};setfs();
+$('fz-').onclick=()=>{fs=Math.max(11,fs-1);setfs()};$('fz+').onclick=()=>{fs=Math.min(28,fs+1);setfs()};
+$('foc').onclick=()=>document.body.classList.toggle('focus');
+$('clr').onclick=async()=>{if(!confirm('Clear the whole conversation?'))return;await post('clear',{what:'chat'});$('log').innerHTML=''};
+$('aclr').onclick=()=>{$('act').innerHTML=''};
+$('exp').onclick=()=>{const t=[...document.querySelectorAll('#log .msg')].map(m=>(m.classList.contains('u')?'You: ':'Anton: ')+m.querySelector('.b').textContent).join('\n\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/plain'}));a.download='anton-chat.txt';a.click()};
+function send(){const v=$('in').value.trim();if(!v)return;ws.send(JSON.stringify({type:'say',text:v,who:'dashboard'}));$('in').value=''}
+$('send').onclick=send;$('in').onkeydown=e=>{if(e.key=='Enter'&&!e.shiftKey){e.preventDefault();send()}};
 connect();refresh();setInterval(refresh,6000);
 </script></body></html>

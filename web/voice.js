@@ -16,11 +16,12 @@ const Voice={on:true,q:[],busy:false,until:0,audio:new Audio(),
 // Asks the engine for 5 alternative transcripts and prefers the one that contains the wake word ("anton"),
 // so a mishearing like "Anthony" in the top guess doesn't kill the wake-up.
 function startMic(onFinal,onMsg){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){onMsg('Browser has no speech recognition. Use Chrome/Edge.');return null}
- const h={on:true,r:null,stop(){this.on=false;try{this.r.abort()}catch(_){}}};
+ const h={on:true,r:null,fails:0,last:'',lt:0,stop(){this.on=false;try{this.r.abort()}catch(_){}}};
+ const note=m=>{const n=Date.now();if(m==h.last&&n-h.lt<60000)return;h.last=m;h.lt=n;onMsg(m)};
  const WAKE=/\b(ant[h]?on\w*|and ?ton|an ton|aunt on|sonofanton)\b/i;
  const go=()=>{if(!h.on)return;const r=h.r=new SR();r.continuous=true;r.interimResults=true;r.maxAlternatives=5;r.lang='en-US';
-  r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){const res=e.results[i];let x=res[0].transcript;if(!res.isFinal){onMsg('… '+x);continue}
+  r.onresult=e=>{h.fails=0;for(let i=e.resultIndex;i<e.results.length;i++){const res=e.results[i];let x=res[0].transcript;if(!res.isFinal){onMsg('… '+x);continue}
    for(let k=0;k<res.length;k++){if(WAKE.test(res[k].transcript)){x=res[k].transcript;break}}
    if(!Voice.speaking())onFinal(x.trim())}};
-  r.onerror=e=>{onMsg('mic error: '+e.error);if(e.error=='not-allowed'||e.error=='service-not-allowed'){h.on=false;onMsg('Mic blocked. Allow the microphone for this site (lock icon in the address bar).')}};
-  r.onend=()=>{if(h.on)setTimeout(go,250)};try{r.start()}catch(_){setTimeout(go,500)}};go();return h}
+  r.onerror=e=>{if(e.error=='no-speech'||e.error=='aborted')return;if(e.error=='network'){h.fails++;note('Browser mic needs internet and looks offline - the PC microphone (offline) takes over by itself.');return}note('mic error: '+e.error);if(e.error=='not-allowed'||e.error=='service-not-allowed'){h.on=false;onMsg('Mic blocked. Allow the microphone for this site (lock icon in the address bar).')}};
+  r.onend=()=>{if(h.on)setTimeout(go,Math.min(15000,250*Math.pow(2,h.fails)))};try{r.start()}catch(_){setTimeout(go,500)}};go();return h}

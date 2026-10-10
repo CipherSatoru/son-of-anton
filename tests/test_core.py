@@ -67,4 +67,16 @@ assert parse("```json\n{\"final\":\"x\"}\n```") == {"final": "x"}
 class NoLocal: ok = False
 b = Brain(cfg, st, FakeCloud(), NoLocal(), bus)
 assert asyncio.run(b.handle("good morning", "t")) and b.stats["instant"] == 1
+# offline: cloud dead, local alive -> still answers (chat and task paths)
+class DeadCloud:
+    ready = True
+    async def chat(s, *a, **k): raise RuntimeError("all cloud models failed")
+class LiveLocal:
+    ok, status = True, "ready"
+    async def chat(s, m, max_tokens=0): return "Offline but here."
+    def failed(s): pass
+b2 = Brain(cfg, st, DeadCloud(), LiveLocal(), bus)
+assert "Offline but here." in asyncio.run(b2.handle("tell me something interesting about owls", "t"))
+assert "Offline but here." in asyncio.run(b2.handle("what is the weather like in paris today", "t"))
+st.q("DELETE FROM convo", (), True); assert st.recent(5) == []
 print("ALL TESTS PASSED")

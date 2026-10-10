@@ -1,6 +1,6 @@
 import asyncio, datetime, hashlib, ipaddress, json, os, socket, ssl, time
 from aiohttp import web, WSMsgType
-from . import config, tools, updater
+from . import config, localtts, tools, updater
 
 WEB = config.ROOT / "web"
 
@@ -56,6 +56,16 @@ class Server:
         self.upd = {"msg": "not checked"}
         self.pc_mic = False
         self.restart = None  # set by main
+        self.edge_skip = 0.0       # when edge-tts failed (offline) skip it for a while
+        self.mute_until = 0.0      # ignore the PC mic while Anton is talking (so he doesn't hear himself)
+        self.browser_stt = 0.0     # last time the browser mic delivered speech (it wins over the PC mic)
+        _emit = bus.emit
+
+        def emit(t, **k):
+            if t in ("reply", "ack") and k.get("to") in ("dashboard", "pc", "all"):
+                self.mute_until = max(self.mute_until, time.time() + 1.2 + len(k.get("text", "")) * 0.075)
+            return _emit(t, **k)
+        bus.emit = emit
 
     # ---- speech in (from phone / browser / vosk) ----
     def on_speech(self, who, text):
@@ -70,6 +80,13 @@ class Server:
             self._dispatch(who, payload)
         elif self.wake.listening(who) and self.cfg["auto_finish_seconds"]:
             self.timers[who] = asyncio.get_running_loop().call_later(self.cfg["auto_finish_seconds"], self._auto, who)
+
+    def on_pc_speech(self, text):
+        """Offline PC microphone (Vosk). Ignored while the browser mic works or while Anton is speaking."""
+        now = time.time()
+        if now < self.mute_until or now - self.browser_stt < 10:
+            return
+        self.on_speech("pc", text)
 
     def _auto(self, who):
         msg = self.wake.flush(who)
@@ -120,31 +137,42 @@ class Server:
     def key_names(self):
         return [p["key_env"] for p in self.cfg["providers"]] + ["GITHUB_TOKEN"]
 
+    async def _edge(self, text, v, p):
+        if time.time() < self.edge_skip:
+            return False
+        try:
+            import edge_tts
+            await asyncio.wait_for(edge_tts.Communicate(text, v["voice"], rate=v["rate"]).save(str(p)), 12)
+            return p.exists() and p.stat().st_size > 0
+        except Exception:
+            p.unlink(missing_ok=True)
+            self.edge_skip = time.time() + 45
+            return False
+
     async def tts(self, request):
         text = request.query.get("text", "").strip()[:400]
         if not text:
             return web.Response(status=400)
         v = self.cfg["tts"]
-        p = config.DATA / "tts" / (hashlib.sha1((v["voice"] + v["rate"] + text).encode()).hexdigest() + ".mp3")
-        if not p.exists():
-            p.parent.mkdir(exist_ok=True)
-            try:
-                import edge_tts
-                await asyncio.wait_for(edge_tts.Communicate(text, v["voice"], rate=v["rate"]).save(str(p)), 15)
-            except Exception:
-                p.unlink(missing_ok=True)
-                return web.Response(status=503)
-        return web.FileResponse(p, headers={"Cache-Control": "max-age=86400"})
+        key = hashlib.sha1((v["voice"] + v["rate"] + text).encode()).hexdigest()
+        d = config.DATA / "tts"
+        d.mkdir(exist_ok=True)
+        mp3, wav = d / (key + ".mp3"), d / (key + ".wav")
+        if mp3.exists() or await self._edge(text, v, mp3):
+            return web.FileResponse(mp3, headers={"Cache-Control": "max-age=86400"})
+        if wav.exists() or await asyncio.get_running_loop().run_in_executor(None, localtts.synth, text, wav):
+            return web.FileResponse(wav, headers={"Cache-Control": "max-age=86400"})
+        return web.Response(status=503)
 
     async def pregen(self):
-        """Pre-render instant-reply voices so greetings play with zero delay."""
+        """Pre-render instant-reply voices so greetings play with zero delay (online only)."""
         from .fastpath import seed_texts
+        v = self.cfg["tts"]
+        d = config.DATA / "tts"
+        d.mkdir(exist_ok=True)
         for t in seed_texts():
-            try:
-                r = await self.tts(type("R", (), {"query": {"text": t}})())
-                if r.status == 503:
-                    return
-            except Exception:
+            p = d / (hashlib.sha1((v["voice"] + v["rate"] + t).encode()).hexdigest() + ".mp3")
+            if not p.exists() and not await self._edge(t, v, p):
                 return
 
     async def do_update(self, apply):
@@ -183,6 +211,9 @@ class Server:
             return web.json_response({"lines": lines})
         elif act == "update":
             return web.json_response(await self.do_update(bool(d.get("apply"))))
+        elif act == "clear":
+            self.store.q("DELETE FROM convo", (), True)
+            self.bus.log.clear()
         elif act == "forget":
             self.store.q("DELETE FROM memory WHERE kind='fact' AND text=?", (d["text"],), True)
         return web.json_response({"ok": True})
@@ -205,6 +236,8 @@ class Server:
                     continue
                 d = json.loads(m.data)
                 who = (d.get("who") or "dashboard")[:24]
+                if d.get("type") == "stt" or (d.get("type") == "say" and who == "pc"):
+                    self.browser_stt = time.time()
                 if d.get("type") == "say" and d.get("text", "").strip():
                     asyncio.create_task(self.brain.handle(d["text"].strip(), who))
                 elif d.get("type") == "stt" and d.get("text"):

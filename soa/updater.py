@@ -78,6 +78,14 @@ def _fetch(cfg, tmp):
     return tmp
 
 
+def _pip(req):
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(req)], timeout=900)
+    if r.returncode:                      # one bad package must not block the rest
+        for line in Path(req).read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", line.strip()], timeout=300)
+
+
 def apply(cfg, log=print):
     """Download + install the latest version. Returns (ok, message). Caller restarts on ok."""
     root = config.ROOT
@@ -92,7 +100,7 @@ def apply(cfg, log=print):
     new_req = hashlib.md5((root / "requirements.txt").read_bytes()).hexdigest()
     if new_req != old_req:
         log("installing new dependencies...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(root / "requirements.txt")], timeout=600)
+        _pip(root / "requirements.txt")
     t = subprocess.run([sys.executable, str(root / "tests" / "test_core.py")], capture_output=True, text=True, timeout=120, cwd=str(root))
     if t.returncode != 0:
         _copy_tree(backup, root, config.DATA / "backup" / "_discard")

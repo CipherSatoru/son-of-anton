@@ -153,6 +153,17 @@ class Cloud:
         return out
 
 
+def _ollama():
+    p = shutil.which("ollama")
+    if p:
+        return p
+    for base in (os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", "")):
+        c = os.path.join(base, "Programs", "Ollama", "ollama.exe") if base else ""
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
 class Local:
     """Small local model via Ollama. Self-heals: starts ollama, pulls the model, rechecks, tolerates hiccups."""
     def __init__(self, cfg):
@@ -173,10 +184,10 @@ class Local:
         try:
             names = await self._tags()
         except Exception:
-            if shutil.which("ollama"):
+            if _ollama():
                 self.status = "starting ollama"
                 kw = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}
-                subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+                subprocess.Popen([_ollama(), "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
                 for _ in range(10):
                     await asyncio.sleep(1)
                     try:
@@ -200,7 +211,7 @@ class Local:
         self.ok = False
         if self._pull is None or self._pull.poll() is not None:
             self.status = f"pulling {want}"
-            self._pull = subprocess.Popen(["ollama", "pull", want], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._pull = subprocess.Popen([_ollama(), "pull", want], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return False
 
     async def chat(self, messages, max_tokens=120):
