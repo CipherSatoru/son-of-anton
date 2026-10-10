@@ -10,6 +10,7 @@ ANTON = {"anton", "antone", "anthon", "anthone", "antoine", "antonio", "antonia"
          "onton", "anten", "antin", "untan", "aton", "antun", "antonn", "anthan", "antwan"}
 WEAK = {"anthony", "antony"}          # real names: only count at the very start or right after a "son of"
 LEAD = {"hey", "hi", "ok", "okay", "yo", "hello"}
+BARE = {"son", "sun", "san", "sonn", "sunn", "sean", "sone"}   # on their own at the start = "I'm calling you"
 END = re.compile(r"[\s,.!?]*\bover[\s.!?]*$", re.I)
 TOK = re.compile(r"[A-Za-z0-9']+")
 
@@ -52,6 +53,10 @@ def find_wake(text, extra=()):
         if s > 3:                                          # wake phrase must be near the start of the utterance
             continue
         return toks[s][1], toks[end][2]
+    # just "son ..." / "sun ..." / "san ..." at the very start of a short utterance also counts as calling the assistant
+    for i in (0, 1):
+        if i < n and w[i] in BARE and (i == 0 or w[0] in LEAD) and n <= 14 and not (i + 1 < n and w[i + 1] in ("of", "in", "and", "is", "was")):
+            return toks[i][1], toks[i][2]
     return None
 
 

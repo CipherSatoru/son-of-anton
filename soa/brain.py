@@ -2,15 +2,23 @@ import asyncio, re, time
 from .agent import Agent
 from .fastpath import FastPath
 
-TASK = re.compile(r"\b(open|close|launch|start|search|google|look ?up|find|type|click|press|run|play|pause|mute|unmute|volume|"
-                  r"screenshot|remind|timer|create|make|write|delete|remove|download|install|send|check|show|list|read|save|"
-                  r"copy|paste|scroll|lock|kill|weather|news|price|translate|summari[sz]e|remember|calculate|upgrade|update|"
-                  r"look at|on my screen|what do you see|organi[sz]e|move|rename|build|fix|debug)\b", re.I)
+# A request is a TASK only when it is phrased as a command / needs live info. Casual chat stays on the fast local model.
+VERBS = (r"open|close|launch|start|search|google|look ?up|find|type|click|press|run|play|pause|resume|mute|unmute|turn|set|take|show|list|"
+         r"read|write|create|make|delete|remove|download|install|send|check|copy|paste|scroll|lock|kill|stop|remind|translate|summari[sz]e|"
+         r"remember|calculate|organi[sz]e|move|rename|build|fix|debug|generate|draw|screenshot|give me|get me|bring up|switch|go to|"
+         r"drag|focus|minimi[sz]e|maximi[sz]e|schedule|search for|whats on|what'?s on|look at")
+IMPERATIVE = re.compile(r"^(?:(?:hey|ok|okay|please|can you|could you|would you|will you|go ahead and|now|just|and|then|also)[,\s]+)*(?:" + VERBS + r")\b", re.I)
+STRONG = re.compile(r"\b(weather|news|headlines|price of|stock|screenshot|on my screen|my screen|volume|clipboard|my files|my folder|remind me|timer|alarm|"
+                    r"youtube|download|install|what do you see|look at (my|the) screen|search (for|the web)|google)\b", re.I)
+LOOKUP = re.compile(r"\b(who (is|was|won)|what (is|are|was) the (latest|current|capital|population|price|score)|when (is|was|did)|where is|how (many|much)|"
+                    r"latest|current|today|tonight|tomorrow|news|score|weather|price|define|meaning of|population|capital of|release date)\b", re.I)
 
 PERSONA = ("You are Son of Anton, a sharp, dry-witted, loyal AI sidekick living on the user's PC, like Jarvis. "
            "Talk like a real person: casual, 1-2 short sentences, no lists, no emojis, never say 'as an AI'. Never invent facts. "
-           "If the user wants an action on the computer, a lookup, maths, current info, code, or anything you're unsure about, "
-           "reply with exactly the single word: ESCALATE")
+           "Chat naturally about anything conversational, opinions, advice and general knowledge. ONLY if the user clearly wants an action on "
+           "the computer, a live lookup (news, weather, prices, scores), or exact maths/code, reply with exactly the single word: ESCALATE")
+CHAT_ONLY = ("You are Son of Anton, a sharp, dry-witted, loyal AI sidekick living on the user's PC, like Jarvis. Talk like a real person: "
+             "casual, 1-2 short sentences, no lists, no emojis, never say 'as an AI'. Answer the user directly, never refuse to chat.")
 
 
 OFFLINE = (" You are currently OFFLINE: the internet and cloud models are unreachable, so you can't do heavy tasks, look things up or use "
@@ -28,7 +36,8 @@ class Brain:
         self.stats = {"instant": 0, "local": 0, "cloud": 0, "agent": 0, "ms": []}
 
     def is_task(self, text):
-        return len(text.split()) > 14 or bool(TASK.search(text))
+        t = text.strip()
+        return len(t.split()) > 28 or bool(IMPERATIVE.search(t)) or bool(STRONG.search(t))
 
     def _facts(self):
         f = [m["text"] for m in self.store.memories("fact", 5)]
@@ -118,6 +127,9 @@ class Brain:
             try:
                 msgs = [{"role": "system", "content": PERSONA + self._facts()}] + self._hist()
                 r = await self.local.chat(msgs)
+                if r and r.upper().startswith("ESCALATE") and not LOOKUP.search(text):
+                    msgs[0]["content"] = CHAT_ONLY + self._facts()      # small models over-escalate: answer it locally
+                    r = await self.local.chat(msgs)
                 if r and not r.upper().startswith("ESCALATE"):
                     self.fast.learn(text, r)
                     return r, "local"

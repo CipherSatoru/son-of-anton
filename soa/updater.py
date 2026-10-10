@@ -1,10 +1,10 @@
-"""Self-update. Works with NO setup: pulls the latest bundle from a private link (gist).
-If a GITHUB_TOKEN is set it uses the private repo instead. Rolls back if the self-test fails."""
+"""Self-update. The repo is public, so no token is needed: raw VERSION + codeload zip. Falls back to a GITHUB_TOKEN (private repo)
+or the gist bundle. Rolls back if the self-test fails."""
 import base64, hashlib, io, shutil, subprocess, sys, tempfile, time, zipfile
 import os
 from pathlib import Path
 import httpx
-from . import config
+from . import config, net
 
 SKIP = {"data", ".venv", ".env", "config.json", "__pycache__", ".git"}
 GIST = "https://gist.githubusercontent.com/CipherSatoru/fd63009f8a4131a5bc6d2c88f1da0f62/raw"
@@ -26,15 +26,22 @@ def _gist(cfg):
 
 def _remote_version(cfg):
     u = cfg["update"]
+    last = None
+    try:
+        return net.get(f"https://raw.githubusercontent.com/{u['repo']}/{u['branch']}/VERSION", timeout=20).strip()
+    except Exception as e:
+        last = e
     if os.environ.get("GITHUB_TOKEN"):
-        r = httpx.get(f"https://api.github.com/repos/{u['repo']}/contents/VERSION", params={"ref": u["branch"]},
-                      headers=_hdr(True), timeout=20)
-        if r.status_code == 200:
-            return r.text.strip()
-    r = httpx.get(_gist(cfg) + "/VERSION", timeout=20, follow_redirects=True)
-    if r.status_code != 200:
-        raise RuntimeError(f"update server HTTP {r.status_code}")
-    return r.text.strip()
+        try:
+            r = httpx.get(f"https://api.github.com/repos/{u['repo']}/contents/VERSION", params={"ref": u["branch"]}, headers=_hdr(True), timeout=20)
+            if r.status_code == 200:
+                return r.text.strip()
+        except Exception as e:
+            last = e
+    try:
+        return net.get(_gist(cfg) + "/VERSION", timeout=20).strip()
+    except Exception:
+        raise last
 
 
 def check(cfg):
@@ -66,15 +73,17 @@ def _copy_tree(src, dst_root, backup):
 def _fetch(cfg, tmp):
     """Download the latest code into tmp, return the folder that holds it."""
     u = cfg["update"]
+    try:
+        zipfile.ZipFile(io.BytesIO(net.get(f"https://codeload.github.com/{u['repo']}/zip/refs/heads/{u['branch']}", raw=True, timeout=90))).extractall(tmp)
+        return next(d for d in tmp.iterdir() if d.is_dir())
+    except Exception:
+        pass
     if os.environ.get("GITHUB_TOKEN"):
         r = httpx.get(f"https://api.github.com/repos/{u['repo']}/zipball/{u['branch']}", headers=_hdr(), timeout=60, follow_redirects=True)
         if r.status_code == 200:
             zipfile.ZipFile(io.BytesIO(r.content)).extractall(tmp)
             return next(tmp.iterdir())
-    r = httpx.get(_gist(cfg) + "/soa_bundle.b64", timeout=60, follow_redirects=True)
-    if r.status_code != 200:
-        raise RuntimeError(f"download failed HTTP {r.status_code}")
-    zipfile.ZipFile(io.BytesIO(base64.b64decode(r.text.strip()))).extractall(tmp)
+    zipfile.ZipFile(io.BytesIO(base64.b64decode(net.get(_gist(cfg) + "/soa_bundle.b64", timeout=60).strip()))).extractall(tmp)
     return tmp
 
 
