@@ -1,4 +1,4 @@
-import asyncio, os, re, shutil, subprocess, sys, time
+import asyncio, os, re, shutil, subprocess, time
 import httpx
 
 
@@ -118,6 +118,8 @@ class Cloud:
                     else:
                         err = f'{e["model"]} HTTP {r.status_code}'
                         self.cool[ck] = time.time() + (3600 if r.status_code in (401, 403) else 90)
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as ex:
+                    raise RuntimeError(f"offline ({type(ex).__name__})")   # network problem: don't punish the models
                 except Exception as ex:
                     err = f'{e["model"]}: {type(ex).__name__}'
                     self.cool[ck] = time.time() + 60

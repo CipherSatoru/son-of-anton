@@ -7,3 +7,4 @@ pyperclip>=1.8
 edge-tts>=6.1
 pillow>=10
 pystray>=0.19
+ddgs>=9

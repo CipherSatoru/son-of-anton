@@ -1,8 +1,7 @@
 """PC-control + utility tools, plus skill loader (builtin skills/ and self-written data/skills/)."""
 import ast, importlib.util, os, platform, re, shutil, subprocess, threading, time, webbrowser
 from pathlib import Path
-import httpx
-from . import config
+from . import config, inputctl, net
 
 TOOLS = {}
 CTX = {"store": None, "notify": lambda m: None, "cfg": {}, "vision": None, "run_task": None}
@@ -32,8 +31,20 @@ def call(name, args):
     t = TOOLS.get(name)
     if not t:
         return f"error: unknown tool '{name}'. Available: {', '.join(sorted(TOOLS))}"
+    fn, args = t["fn"], dict(args or {})
     try:
-        out = t["fn"](**(args or {}))
+        try:
+            out = fn(**args)
+        except TypeError:
+            import inspect
+            sig = inspect.signature(fn).parameters.values()
+            if any(p.kind == p.VAR_KEYWORD for p in sig):
+                raise
+            names = [p.name for p in sig]
+            fixed = {k: v for k, v in args.items() if k in names}
+            if not fixed and args and names:  # model used a different arg name: map by position
+                fixed = dict(zip(names, args.values()))
+            out = fn(**fixed)
         return str(out if out is not None else "done")[:2500]
     except TypeError as e:
         return f"error: bad arguments for {name}({t['args']}): {e}"
@@ -42,13 +53,35 @@ def call(name, args):
 
 
 # ---------- apps / web ----------
-@tool("open_app", "Open an application or file by name or path", "name")
+APPS = {"chrome": "chrome", "edge": "msedge", "firefox": "firefox", "notepad": "notepad", "calculator": "calc", "calc": "calc",
+        "paint": "mspaint", "explorer": "explorer", "file explorer": "explorer", "files": "explorer", "cmd": "cmd",
+        "command prompt": "cmd", "terminal": "wt", "settings": "ms-settings:", "task manager": "taskmgr", "vscode": "code",
+        "vs code": "code", "word": "winword", "excel": "excel", "powerpoint": "powerpnt", "spotify": "spotify", "camera": "microsoft.windows.camera:"}
+
+
+def _find_lnk(name):
+    n, best = name.lower(), None
+    for r in (os.path.expandvars(r"%ProgramData%\Microsoft\Windows\Start Menu\Programs"),
+              os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs")):
+        for d, _, fs in os.walk(r):
+            for f in fs:
+                if f.lower().endswith((".lnk", ".url")) and n in f.lower() and (best is None or len(f) < len(os.path.basename(best))):
+                    best = os.path.join(d, f)
+    return best
+
+
+@tool("open_app", "Open an application or file by name (chrome, notepad, spotify, ...) or path", "name")
 def open_app(name):
     if SYS == "Windows":
+        target = APPS.get(name.lower().strip(), name)
         try:
-            os.startfile(name)
+            os.startfile(target)
         except OSError:
-            subprocess.Popen(f'start "" "{name}"', shell=True)
+            lnk = _find_lnk(name)
+            if lnk:
+                os.startfile(lnk)
+            else:
+                subprocess.Popen(["cmd", "/c", "start", "", target], creationflags=0x08000000)
     elif SYS == "Darwin":
         subprocess.Popen(["open", "-a", name])
     else:
@@ -65,76 +98,55 @@ def open_url(url):
     return f"opened {url}"
 
 
-@tool("web_search", "Search the web (DuckDuckGo). Returns top results with snippets", "query")
+@tool("web_search", "Search the web (several engines, auto-fallback). Returns top results with snippets", "query")
 def web_search(query):
-    r = httpx.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=UA, timeout=20, follow_redirects=True)
-    items = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>', r.text, re.S)
-    out = []
-    for href, title, snip in items[:6]:
-        m = re.search(r"uddg=([^&]+)", href)
-        if m:
-            from urllib.parse import unquote
-            href = unquote(m.group(1))
-        clean = lambda s: re.sub(r"\s+", " ", re.sub(r"<.*?>", "", s)).strip()
-        out.append(f"{clean(title)} - {href}\n  {clean(snip)}")
-    return "\n".join(out) or "no results"
+    return net.search(query)
 
 
 @tool("fetch_url", "Download a web page and return its readable text", "url")
 def fetch_url(url):
-    r = httpx.get(url, headers=UA, timeout=20, follow_redirects=True)
-    t = re.sub(r"(?s)<(script|style|noscript).*?</\1>", " ", r.text)
-    t = re.sub(r"<.*?>", " ", t)
-    return re.sub(r"\s+", " ", t).strip()[:3500]
+    return net.page_text(url if url.startswith("http") else "https://" + url)
 
 
 @tool("weather", "Current weather for a city", "city")
 def weather(city):
-    return httpx.get(f"https://wttr.in/{city}?format=3", headers=UA, timeout=15).text.strip()
+    return net.get(f"https://wttr.in/{city}", params={"format": "3"}, timeout=15).strip()
 
 
 # ---------- keyboard / mouse / screen ----------
-@tool("type_text", "Type text at the current cursor (works with any language)", "text")
+@tool("type_text", "Type text at the current cursor (any language; newline = Enter)", "text")
 def type_text(text):
-    pg = _pg()
-    if text.isascii():
-        pg.write(text, interval=0.008)
-    else:
-        import pyperclip
-        pyperclip.copy(text)
-        pg.hotkey("command" if SYS == "Darwin" else "ctrl", "v")
-    return "typed"
+    inputctl.type_text(str(text))
+    return f"typed {len(str(text))} chars"
 
 
-@tool("press_keys", "Press a key or combo, e.g. 'enter' or 'ctrl+shift+t' or 'alt+f4'", "keys")
+@tool("press_keys", "Press a key or combo: 'enter', 'ctrl+c', 'alt+tab', 'win+d', 'ctrl+shift+t', 'f5'", "keys")
 def press_keys(keys):
-    parts = [k.strip() for k in keys.lower().split("+")]
-    _pg().hotkey(*parts) if len(parts) > 1 else _pg().press(parts[0])
+    inputctl.press(keys)
     return f"pressed {keys}"
 
 
-@tool("click", "Click at screen coordinates", "x, y, button='left', clicks=1")
-def click(x, y, button="left", clicks=1):
-    _pg().click(int(x), int(y), button=button, clicks=int(clicks))
+@tool("click", "Click at screen coordinates (button left|right|middle, clicks 1|2). Omit x,y to click where the mouse is", "x, y, button='left', clicks=1")
+def click(x=None, y=None, button="left", clicks=1):
+    inputctl.click(None if x is None else int(float(x)), None if y is None else int(float(y)), str(button), int(clicks))
     return f"clicked {x},{y}"
 
 
 @tool("move_mouse", "Move mouse to coordinates", "x, y")
 def move_mouse(x, y):
-    _pg().moveTo(int(x), int(y), duration=0.15)
+    inputctl.move(int(float(x)), int(float(y)))
     return "moved"
 
 
 @tool("scroll", "Scroll up (positive) or down (negative)", "amount")
 def scroll(amount):
-    _pg().scroll(int(amount))
+    inputctl.scroll(int(float(amount)))
     return "scrolled"
 
 
 @tool("screen_size", "Screen resolution and current mouse position", "")
 def screen_size():
-    pg = _pg()
-    return f"size={tuple(pg.size())} mouse={tuple(pg.position())}"
+    return f"size={inputctl.size()} mouse={inputctl.position()}"
 
 
 @tool("screenshot", "Take a screenshot; returns the saved file path", "")
@@ -142,7 +154,7 @@ def screenshot():
     d = config.DATA / "shots"
     d.mkdir(exist_ok=True)
     p = d / time.strftime("%Y%m%d-%H%M%S.png")
-    _pg().screenshot().save(p)
+    inputctl.screenshot_to(p)
     return str(p)
 
 
@@ -150,14 +162,16 @@ def screenshot():
 def volume(action, level=50):
     level = max(0, min(100, int(level)))
     if SYS == "Windows":
-        pg = _pg()
+        def tap(k, n=1):
+            for _ in range(n):
+                inputctl.press(k)
         if action == "mute":
-            pg.press("volumemute")
+            tap("volumemute")
         elif action == "set":
-            pg.press("volumedown", presses=50)
-            pg.press("volumeup", presses=level // 2)
+            tap("volumedown", 50)
+            tap("volumeup", level // 2)
         else:
-            pg.press("volumeup" if action == "up" else "volumedown", presses=5)
+            tap("volumeup" if action == "up" else "volumedown", 5)
     elif SYS == "Darwin":
         cmd = {"mute": "set volume with output muted", "set": f"set volume output volume {level}",
                "up": "set volume output volume ((output volume of (get volume settings)) + 10)",
@@ -173,7 +187,7 @@ def volume(action, level=50):
 @tool("media", "Media key: playpause | next | prev | stop", "action")
 def media(action):
     key = {"playpause": "playpause", "next": "nexttrack", "prev": "prevtrack", "stop": "stop"}[action]
-    _pg().press(key)
+    inputctl.press(key)
     return action
 
 
@@ -423,3 +437,6 @@ def create_skill(name, code):
 @tool("list_skills", "List learned skills", "")
 def list_skills():
     return ", ".join(n for n, t in TOOLS.items() if t.get("skill")) or "none yet"
+
+
+from . import tools2  # noqa: E402,F401  (registers the extra tools)

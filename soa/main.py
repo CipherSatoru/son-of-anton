@@ -1,5 +1,5 @@
 import asyncio, os, sys, webbrowser
-from . import config, offline, tools, tray
+from . import config, offline, tools, tools2, tray
 from .bus import Bus
 from .store import Store
 from .llm import Cloud, Local
@@ -22,7 +22,8 @@ async def amain(open_browser=True, use_tray=False):
     brain = Brain(cfg, store, cloud, local, bus)
     tools.CTX.update(store=store, cfg=cfg, notify=lambda m: bus.emit("reply", to="all", text=m, route="notify", ms=0),
                      vision=lambda q, b: asyncio.run_coroutine_threadsafe(cloud.vision(q, b), loop).result(90),
-                     run_task=lambda t: asyncio.run_coroutine_threadsafe(brain.handle(t, "dashboard"), loop))
+                     run_task=lambda t: asyncio.run_coroutine_threadsafe(brain.handle(t, "dashboard"), loop),
+                     delegate=lambda t: asyncio.run_coroutine_threadsafe(brain.agent.run(t, "delegate"), loop).result(240))
     skills = tools.load_skills()
     improver = SelfImprover(cfg, store, cloud, brain, bus)
     srv = Server(cfg, store, cloud, local, brain, improver, Wake(cfg), bus)
@@ -69,9 +70,9 @@ async def amain(open_browser=True, use_tray=False):
         await srv.pregen()
         if cfg["update"]["auto"]:
             while True:
-                r = await srv.do_update(True)
+                await srv.do_update(True)
                 await asyncio.sleep(cfg["update"]["check_minutes"] * 60)
-    tasks = [asyncio.create_task(boot()), asyncio.create_task(improver.loop()), asyncio.create_task(local.keepalive()), asyncio.create_task(offline_setup())]
+    tasks = [asyncio.create_task(boot()), asyncio.create_task(improver.loop()), asyncio.create_task(local.keepalive()), asyncio.create_task(offline_setup()), asyncio.create_task(tools2.cron_loop(brain))]
 
     async def periodic():
         while True:

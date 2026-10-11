@@ -29,6 +29,23 @@ assert w2.feed("d", "Anton good morning over") == ("message", "good morning")
 assert w2.feed("e", "I told anthony hello") == (None, None)
 w3 = Wake(cfg); w3.feed("f", "anton what time is it"); assert w3.flush("f") == "what time is it"
 
+# bare "son/sun/san" and "anton" call the assistant
+from soa.wake import find_wake
+assert find_wake("san open chrome over") and find_wake("Sun, what time is it") and find_wake("hey son tell me a joke")
+assert find_wake("my son is home") is None and find_wake("son of a gun that hurts") is None
+
+# routing: chat stays local, commands go to the agent
+from soa.brain import Brain as _B
+_b = _B.__new__(_B)
+assert not _b.is_task("how are you doing") and not _b.is_task("tell me a joke") and not _b.is_task("I want to start learning guitar")
+assert _b.is_task("open chrome") and _b.is_task("can you play some lofi") and _b.is_task("what's the weather in Nairobi")
+
+# tools: tolerant args, calc, python execution, many tools registered
+assert len(tools.TOOLS) >= 55
+assert tools.call("calc", {"expression": "2^10 + sqrt(16)"}) == "1028.0"
+assert tools.call("calc", {"x": "3x4"}) == "12"
+assert tools.call("execute_code", {"code": "print(6*7)"}).strip() == "42"
+
 # updater version compare
 from soa import updater
 assert updater._v("1.2.0") > updater._v("1.1.9") and not updater._v("1.1.0") > updater._v("1.1.0")

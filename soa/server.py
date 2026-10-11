@@ -150,6 +150,7 @@ class Server:
             return False
 
     async def tts(self, request):
+        """Streams neural speech while it is still being generated (first audio in ~0.3s); caches the result."""
         text = request.query.get("text", "").strip()[:400]
         if not text:
             return web.Response(status=400)
@@ -158,8 +159,40 @@ class Server:
         d = config.DATA / "tts"
         d.mkdir(exist_ok=True)
         mp3, wav = d / (key + ".mp3"), d / (key + ".wav")
-        if mp3.exists() or await self._edge(text, v, mp3):
+        if mp3.exists():
             return web.FileResponse(mp3, headers={"Cache-Control": "max-age=86400"})
+        if time.time() >= self.edge_skip:
+            resp, f, tmp = None, None, mp3.with_suffix(".part")
+            try:
+                import edge_tts
+                agen = edge_tts.Communicate(text, v["voice"], rate=v["rate"]).stream()
+
+                async def next_audio():
+                    async for ch in agen:
+                        if ch["type"] == "audio":
+                            return ch["data"]
+                first = await asyncio.wait_for(next_audio(), 8)
+                if first:
+                    resp = web.StreamResponse(headers={"Content-Type": "audio/mpeg", "Cache-Control": "no-cache"})
+                    await resp.prepare(request)
+                    f = open(tmp, "wb")
+                    f.write(first)
+                    await resp.write(first)
+                    async for ch in agen:
+                        if ch["type"] == "audio":
+                            f.write(ch["data"])
+                            await resp.write(ch["data"])
+                    f.close()
+                    tmp.replace(mp3)
+                    await resp.write_eof()
+                    return resp
+            except Exception:
+                if f:
+                    f.close()
+                tmp.unlink(missing_ok=True)
+                if resp is not None:
+                    return resp
+                self.edge_skip = time.time() + 45          # offline: skip the online voice for a bit
         if wav.exists() or await asyncio.get_running_loop().run_in_executor(None, localtts.synth, text, wav):
             return web.FileResponse(wav, headers={"Cache-Control": "max-age=86400"})
         return web.Response(status=503)
@@ -170,7 +203,7 @@ class Server:
         v = self.cfg["tts"]
         d = config.DATA / "tts"
         d.mkdir(exist_ok=True)
-        for t in seed_texts():
+        for t in seed_texts() + ["On it.", "Done.", "One moment.", "Got it."]:
             p = d / (hashlib.sha1((v["voice"] + v["rate"] + t).encode()).hexdigest() + ".mp3")
             if not p.exists() and not await self._edge(t, v, p):
                 return
