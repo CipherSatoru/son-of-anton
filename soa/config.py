@@ -27,7 +27,7 @@ DEFAULTS = {
          "models": ["meta-llama/llama-3.3-70b-instruct:free"], "discover_free": True},
     ],
     "idle_seconds": 120,
-    "self_improve": {"enabled": True, "max_cycles_per_day": 24, "cooldown_seconds": 600},
+    "self_improve": {"enabled": True, "max_cycles_per_day": 6, "cooldown_seconds": 2700},
     "fastpath": {"promote_after": 3, "fuzzy": 0.88},
     "agent_max_steps": 8,
     "allow_dangerous": False,

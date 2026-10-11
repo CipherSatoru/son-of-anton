@@ -103,9 +103,11 @@ class SelfImprover:
         return f"{len(top)} frequent phrases catalogued"
 
     async def job_consolidate(self):
-        convo = "\n".join(f'{m["role"]}: {m["text"][:200]}' for m in self.store.recent(40))
-        if len(convo) < 80:
-            return "not enough conversation yet"
+        rows = self.store.q("SELECT id,role,text FROM convo WHERE id>? ORDER BY id DESC LIMIT 14", (getattr(self, "_seen", 0),))
+        if len(rows) < 6:
+            return "not enough new conversation yet"
+        self._seen = max(r[0] for r in rows)
+        convo = "\n".join(f"{r[1]}: {r[2][:160]}" for r in reversed(rows))
         txt, _ = await self.cloud.chat([{"role": "user", "content": CONSOLIDATE.replace("{convo}", convo)}], 300, 0.1)
         import json
         m = re.search(r"\[.*\]", txt, re.S)
@@ -129,7 +131,7 @@ class SelfImprover:
     async def job_skill(self):
         habits = "; ".join(p["phrase"] for p in self.store.top_phrases(6)) or "unknown"
         facts = "; ".join(m["text"] for m in self.store.memories("fact", 6)) or "unknown"
-        prompt = SKILL.replace("{tools}", tools.describe()).replace("{habits}", habits).replace("{facts}", facts).replace("{{", "{").replace("}}", "}")
+        prompt = SKILL.replace("{tools}", ", ".join(sorted(tools.TOOLS))).replace("{habits}", habits).replace("{facts}", facts).replace("{{", "{").replace("}}", "}")
         txt, _ = await self.cloud.chat([{"role": "user", "content": prompt}], 700, 0.5)
         m = re.search(r"```(?:python)?\s*(.*?)```", txt, re.S)
         if not m:
