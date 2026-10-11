@@ -233,9 +233,9 @@ def browser_vision(question="Describe this page"):
         from PIL import Image
         png = _req("GET", f"/tabs/{_tabid()}/screenshot", params={"userId": USER}).content
         im = Image.open(io.BytesIO(png)).convert("RGB")
-        im.thumbnail((1280, 1280))
+        im.thumbnail((1024, 1024))
         buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=70)
+        im.save(buf, "JPEG", quality=60)
         return CTX["vision"](question, base64.b64encode(buf.getvalue()).decode())
     return _wrap(go)
 

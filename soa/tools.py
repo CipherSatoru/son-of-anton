@@ -206,9 +206,9 @@ def _jpeg_b64(path):
     import base64, io
     from PIL import Image
     im = Image.open(path).convert("RGB")
-    im.thumbnail((1280, 1280))
+    im.thumbnail((1024, 1024))
     buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=70)
+    im.save(buf, "JPEG", quality=60)
     return base64.b64encode(buf.getvalue()).decode()
 
 

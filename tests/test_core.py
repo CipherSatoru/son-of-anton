@@ -1,5 +1,5 @@
 """Run: python tests/test_core.py   (no network or keys needed)"""
-import asyncio, sys, tempfile, time
+import asyncio, json, os, sys, tempfile, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from soa import config, tools
@@ -72,7 +72,7 @@ assert t == "skill_hello" and tools.call(t, {}) == "hi", err
 class FakeCloud:
     ready = True
     def __init__(s): s.n = 0
-    async def chat(s, m, max_tokens=0, temperature=0):
+    async def chat(s, m, max_tokens=0, temperature=0, **k):
         s.n += 1
         return ('{"tool":"get_time","args":{}}' if s.n == 1 else '{"final":"Done, boss."}'), {"model": "fake"}
 bus = Bus()
@@ -92,8 +92,65 @@ class LiveLocal:
     ok, status = True, "ready"
     async def chat(s, m, max_tokens=0): return "Offline but here."
     def failed(s): pass
+def _offline_weather(city=""): raise RuntimeError("offline")
+tools.TOOLS["weather"]["fn"] = _offline_weather      # emulate no internet
 b2 = Brain(cfg, st, DeadCloud(), LiveLocal(), bus)
 assert "Offline but here." in asyncio.run(b2.handle("tell me something interesting about owls", "t"))
 assert "Offline but here." in asyncio.run(b2.handle("what is the weather like in paris today", "t"))
 st.q("DELETE FROM convo", (), True); assert st.recent(5) == []
+
+# ---- v1.5: instant intents run with no model, risky ones are guarded ----
+from soa import browser, intents, toolbox
+assert intents.match("turn the volume up")[0] == "volume" and intents.match("set a timer for 5 minutes")[1]["seconds"] == 300
+assert intents.match("what is the capital of france") is None and intents.match("tell me a joke") is None
+ran = []
+tools.TOOLS["volume"]["fn"] = lambda action, level=50: ran.append(action) or "ok"
+bi = Brain(cfg, st, DeadCloud(), LiveLocal(), bus)
+assert asyncio.run(bi.handle("hey turn it up", "t")) == "Louder." and ran == ["up"]          # no model was called (DeadCloud would raise)
+assert asyncio.run(bi._instant("type of music do you like")) is None                         # a question, not "type this"
+assert asyncio.run(bi._instant("open xyzzyqq")) is None                                      # unknown app falls through to the agent
+
+# ---- v1.5: only the tools a task needs are sent to the model ----
+full, rest = toolbox.prompt_for("what's the weather")
+full2, _ = toolbox.prompt_for("log in to amazon and buy a charger")
+assert "browser_click" not in full and "browser_click" in rest and "browser_click(" in full2
+assert len(full) < len(tools.describe()) * 0.6
+
+# ---- v1.5: cloud client streams, ranks by speed, and survives a 429 (local fake provider) ----
+import copy
+from aiohttp import web as _w
+from soa.llm import Cloud
+c0 = Cloud(cfg)
+c0.entries = [{"provider": "groq", "model": "big-reasoning-120b", "vision": None}, {"provider": "groq", "model": "llama-fast", "vision": None}]
+assert c0._order()[0]["model"] == "llama-fast"
+
+async def _provider_test():
+    async def comp(req):
+        j = await req.json()
+        if j["model"] == "bad-model":
+            return _w.Response(status=429, headers={"Retry-After": "30"})
+        r = _w.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await r.prepare(req)
+        for piece in ("<think>hmm</think>He", "llo ", "there"):
+            await r.write(('data: {"choices":[{"delta":{"content":%s}}]}\n\n' % json.dumps(piece)).encode())
+        await r.write(b"data: [DONE]\n\n")
+        return r
+    app = _w.Application(); app.router.add_post("/v1/chat/completions", comp)
+    run = _w.AppRunner(app); await run.setup()
+    site = _w.TCPSite(run, "127.0.0.1", 0); await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    c2 = copy.deepcopy(cfg)
+    c2["providers"] = [{"name": "fake", "base": f"http://127.0.0.1:{port}/v1", "key_env": "FAKE_KEY", "models": ["bad-model", "good-model"]}]
+    os.environ["FAKE_KEY"] = "k"
+    cl, got = Cloud(c2), []
+    txt, e = await cl.chat([{"role": "user", "content": "hi"}], on_delta=got.append, timeout=30)
+    await run.cleanup()
+    return txt, e, got, cl
+_txt, _e, _got, _cl = asyncio.run(_provider_test())
+assert _txt == "Hello there" and _e["model"] == "good-model" and len(_got) >= 2
+assert _cl.cool.get("fake|bad-model", 0) > time.time() + 20          # the 429 benched that model, not the whole provider
+
+# ---- v1.5: browser tools are registered ----
+from soa import browser
+assert all(n in tools.TOOLS for n in ("browser_open", "browser_click", "browser_type", "browser_vision"))
 print("ALL TESTS PASSED")

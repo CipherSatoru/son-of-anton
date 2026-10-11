@@ -1,5 +1,5 @@
 import asyncio, os, sys, webbrowser
-from . import config, offline, tools, tools2, tray
+from . import browser, config, offline, tools, tools2, tray
 from .bus import Bus
 from .store import Store
 from .llm import Cloud, Local

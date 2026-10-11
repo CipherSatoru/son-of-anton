@@ -1,4 +1,5 @@
-import asyncio, re, time
+import asyncio, re, shutil, time
+from . import intents, tools
 from .agent import Agent
 from .fastpath import FastPath
 
@@ -23,6 +24,13 @@ CHAT_ONLY = ("You are Son of Anton, a sharp, dry-witted, loyal AI sidekick livin
 
 OFFLINE = (" You are currently OFFLINE: the internet and cloud models are unreachable, so you can't do heavy tasks, look things up or use "
            "current info right now. Answer briefly from what you know; if it needs internet, say so honestly in one sentence.")
+
+
+def _known_app(name):
+    n = name.lower().strip()
+    if tools.SYS == "Darwin" or n in tools.APPS or shutil.which(n):
+        return True
+    return tools.SYS == "Windows" and bool(tools._find_lnk(n))
 
 
 class Brain:
@@ -57,6 +65,8 @@ class Brain:
             self.fast.seen(text)
             reply = self.fast.match(text)
             if reply is None:
+                reply = await self._instant(text)        # common PC commands: no model call, nothing uploaded
+            if reply is None:
                 if self.is_task(text):
                     reply, route = await self._agent(text, src)
                 else:
@@ -72,6 +82,24 @@ class Brain:
             self.stats["ms"] = (self.stats["ms"] + [ms])[-50:]
         self.bus.emit("reply", to=src, text=reply, route=route, ms=ms)
         return reply
+
+    async def _instant(self, text):
+        hit = intents.match(text)
+        if not hit:
+            return None
+        name, args, tpl = hit
+        if name == "open_app" and not _known_app(args.get("name", "")):
+            return None
+        if name == "type_text" and text.strip().lower().split()[1:2] in (["of"], ["a"], ["an"], ["the"], ["your"], ["my"], ["is"], ["do"]):
+            return None                                  # "type of music do you like" is a question, not a command
+        self.bus.emit("step", n=1, tool=name, args=args, model="instant")
+        res = await asyncio.get_running_loop().run_in_executor(None, tools.call, name, args)
+        self.bus.emit("step_result", tool=name, result=res[:300])
+        if res.startswith(("error", "refused")):
+            return None                                  # let the agent try
+        if tpl == "NEWS":
+            return intents.speak_result("news", res)
+        return tpl.replace("{r}", intents.speak_result(name, res)) if "{r}" in tpl else tpl
 
     async def _ensure_local(self):
         if getattr(self.local, "ok", False):
@@ -119,6 +147,11 @@ class Brain:
             raise
 
     async def _chat(self, text, src):
+        if self.cloud.ready and time.time() >= self._down and (LOOKUP.search(text) or len(text.split()) > 14):
+            try:                                          # knowledge-heavy: skip the small local model, go straight to the cloud
+                return await self._cloud_chat(text)
+            except Exception:
+                self._down = time.time() + 30
         if time.time() < self._down:          # internet known to be down: don't bother escalating to the cloud
             r = await self._offline(text)
             if r:

@@ -1,6 +1,6 @@
 import asyncio, datetime, hashlib, ipaddress, json, os, socket, ssl, time
 from aiohttp import web, WSMsgType
-from . import config, localtts, tools, updater
+from . import browser, config, localtts, tools, updater
 
 WEB = config.ROOT / "web"
 
@@ -111,6 +111,14 @@ class Server:
     async def voicejs(self, request):
         return web.Response(text=(WEB / "voice.js").read_text(encoding="utf-8"), content_type="application/javascript")
 
+    async def static(self, request):
+        n = request.match_info["name"]
+        f = WEB / n
+        kinds = {".js": "application/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
+        if "/" in n or "\\" in n or f.suffix not in kinds or not f.is_file():
+            return web.Response(status=404)
+        return web.Response(body=f.read_bytes(), content_type=kinds[f.suffix], headers={"Cache-Control": "no-cache"})
+
     async def page(self, request):
         f = "phone.html" if request.path == "/phone" else "dashboard.html"
         return web.Response(text=(WEB / f).read_text(encoding="utf-8"), content_type="text/html")
@@ -131,7 +139,7 @@ class Server:
             "convo": self.store.recent(30),
             "self_improve": self.cfg["self_improve"]["enabled"], "version": config.version(), "update": self.upd,
             "local_status": self.local.status + (f" · last error: {self.local.err}" if getattr(self.local, "err", None) else ""), "pc_mic": self.pc_mic, "voice": self.cfg["tts"]["voice"],
-            "keys": {k: bool(os.environ.get(k)) for k in self.key_names()},
+            "keys": {k: bool(os.environ.get(k)) for k in self.key_names()}, "browser": browser.status(),
         }
 
     def key_names(self):
@@ -248,6 +256,8 @@ class Server:
             return web.json_response({"lines": lines})
         elif act == "update":
             return web.json_response(await self.do_update(bool(d.get("apply"))))
+        elif act == "browser":
+            return web.json_response(browser.setup_async())
         elif act == "clear":
             self.store.q("DELETE FROM convo", (), True)
             self.bus.log.clear()
@@ -287,7 +297,7 @@ class Server:
     async def start(self):
         app = web.Application(middlewares=[self.auth])
         app.add_routes([web.get("/", self.page), web.get("/phone", self.page), web.get("/ws", self.ws),
-                        web.get("/api/state", self.api_state), web.get("/tts", self.tts), web.get("/voice.js", self.voicejs), web.post("/api/{act}", self.api_post)])
+                        web.get("/api/state", self.api_state), web.get("/tts", self.tts), web.get("/voice.js", self.voicejs), web.get("/web/{name}", self.static), web.post("/api/{act}", self.api_post)])
         runner = web.AppRunner(app)
         await runner.setup()
         await web.TCPSite(runner, self.cfg["host"], self.cfg["port"]).start()

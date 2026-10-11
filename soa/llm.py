@@ -1,4 +1,4 @@
-import asyncio, os, re, shutil, subprocess, time
+import asyncio, json, os, re, shutil, subprocess, time
 import httpx
 
 
@@ -26,10 +26,20 @@ def vision_flag(m):
     return True if re.search(r"vl\b|vision|omni|pixtral|llava|gemini|gpt-[45]|claude", str(m.get("id", "")), re.I) else None
 
 
+SLOWISH = re.compile(r"reason|think|r1\b|deepseek-r|qwq|120b|235b|405b|ultra|preview", re.I)
+
+
+class _HTTP(Exception):
+    def __init__(self, code, retry=None):
+        super().__init__(f"HTTP {code}")
+        self.code, self.retry = code, retry
+
+
 class Cloud:
     """OpenAI-compatible multi-provider client, auto-failover across free models, vision-aware."""
     def __init__(self, cfg):
         self.cfg, self.cool, self.pinned, self.last, self.entries = cfg, {}, None, None, []
+        self.stat = {}      # per model: smoothed latency (ms) + recent failures -> fastest healthy model goes first
         self._static()
 
     def prov(self, name):
@@ -80,9 +90,24 @@ class Cloud:
                         seen.add((p["name"], m["id"]))
                         n += 1
 
-    def _order(self, vision=False):
+    def _rank(self, e, fast=True):
+        st = self.stat.get(self._k(e), {})
+        slow = bool(SLOWISH.search(e["model"]))
+        ms = st.get("ms", 2500 + (3000 if slow else 0)) + (4000 if (fast and slow) else 0)
+        return ms + st.get("fail", 0) * 1500 - (2000 if self._k(e) == self.last else 0)
+
+    def _note(self, e, ok, ms=None):
+        st = self.stat.setdefault(self._k(e), {})
+        if ok:
+            st["ms"] = ms if "ms" not in st else st["ms"] * 0.6 + ms * 0.4
+            st["fail"] = max(0, st.get("fail", 0) - 1)
+        else:
+            st["fail"] = st.get("fail", 0) + 1
+
+    def _order(self, vision=False, fast=True):
         now = time.time()
         pool = [e for e in self.entries if self.cool.get(self._k(e, vision), 0) < now and (not vision or e["vision"] is not False)]
+        pool.sort(key=lambda e: self._rank(e, fast))
         if vision:
             pool.sort(key=lambda e: e["vision"] is not True)
         if self.pinned:
@@ -92,37 +117,94 @@ class Cloud:
     def catalog(self):
         now = time.time()
         return [{"provider": e["provider"], "model": e["model"], "vision": e["vision"], "id": self._k(e),
-                 "cooling": max(0, int(self.cool.get(self._k(e), 0) - now)), "pinned": self._k(e) == self.pinned}
+                 "cooling": max(0, int(self.cool.get(self._k(e), 0) - now)), "pinned": self._k(e) == self.pinned,
+                 "ms": int(self.stat.get(self._k(e), {}).get("ms", 0))}
                 for e in self.entries]
 
-    async def chat(self, messages, max_tokens=900, temperature=0.4, vision=False):
-        cands = self._order(vision)
+    async def _one(self, c, e, messages, max_tokens, temperature, on_delta, first_tok):
+        """One streamed request. A dead or slow model is detected after `first_tok` seconds, not after a full timeout."""
+        p = self.prov(e["provider"])
+        t0 = time.time()
+        out, got = [], False
+        async with c.stream("POST", p["base"].rstrip("/") + "/chat/completions",
+                            headers={"Authorization": "Bearer " + self.key(p), "X-Title": "Son of Anton", "HTTP-Referer": "http://localhost"},
+                            json={"model": e["model"], "messages": messages, "max_tokens": max_tokens,
+                                  "temperature": temperature, "stream": True}) as r:
+            if r.status_code != 200:
+                await r.aread()
+                raise _HTTP(r.status_code, r.headers.get("retry-after"))
+            if "text/event-stream" not in r.headers.get("content-type", ""):
+                j = json.loads((await r.aread()) or b"{}")
+                txt = ((j.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                if on_delta and txt:
+                    on_delta(txt)
+                return strip_think(txt), int((time.time() - t0) * 1000)
+            it = r.aiter_lines().__aiter__()
+            while True:
+                try:
+                    line = await asyncio.wait_for(it.__anext__(), first_tok if not got else 25)
+                except StopAsyncIteration:
+                    break
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    d = ((json.loads(data).get("choices") or [{}])[0].get("delta")) or {}
+                except Exception:
+                    continue
+                piece = d.get("content") or ""
+                if piece or d.get("reasoning_content") or d.get("reasoning"):
+                    got = True
+                if piece:
+                    out.append(piece)
+                    if on_delta:
+                        on_delta(piece)
+        return strip_think("".join(out)), int((time.time() - t0) * 1000)
+
+    async def chat(self, messages, max_tokens=900, temperature=0.4, vision=False, fast=True, on_delta=None, max_attempts=4, timeout=None):
+        cands = self._order(vision, fast)
         if not cands:
             raise RuntimeError("no cloud model available" + (" with vision" if vision else "") + " (add a key in the dashboard, or wait for cooldown)")
-        err = None
-        async with httpx.AsyncClient(timeout=httpx.Timeout(75 if vision else 60, connect=10)) as c:
+        per = timeout or (80 if vision else 60)
+        err, tried, net_err = None, 0, 0
+        deadline = time.time() + (timeout * 2 if timeout else (80 if vision else 50))
+        tmo = httpx.Timeout(connect=8, read=15, write=20, pool=5)
+        async with httpx.AsyncClient(timeout=tmo) as c:
             for e in cands:
-                p = self.prov(e["provider"])
+                if tried >= max_attempts or time.time() > deadline:
+                    break
+                tried += 1
                 ck = self._k(e, vision)
                 try:
-                    r = await c.post(p["base"].rstrip("/") + "/chat/completions",
-                                     headers={"Authorization": "Bearer " + self.key(p), "X-Title": "Son of Anton", "HTTP-Referer": "http://localhost"},
-                                     json={"model": e["model"], "messages": messages, "max_tokens": max_tokens, "temperature": temperature})
-                    if r.status_code == 200:
-                        txt = strip_think(r.json()["choices"][0]["message"].get("content") or "")
-                        if txt:
-                            self.last = self._k(e)
-                            return txt, e
-                        err = f'{e["model"]}: empty reply'
-                        self.cool[ck] = time.time() + 30
-                    else:
-                        err = f'{e["model"]} HTTP {r.status_code}'
-                        self.cool[ck] = time.time() + (3600 if r.status_code in (401, 403) else 90)
+                    txt, ms = await asyncio.wait_for(self._one(c, e, messages, max_tokens, temperature, on_delta, 20 if vision else 9), per)
+                    if txt:
+                        self.last = self._k(e)
+                        self._note(e, True, ms)
+                        return txt, e
+                    err = f'{e["model"]}: empty reply'
+                    self.cool[ck] = time.time() + 30
+                    self._note(e, False)
+                except _HTTP as h:
+                    err = f'{e["model"]} HTTP {h.code}'
+                    try:
+                        wait = min(300, int(h.retry)) if h.retry else 0
+                    except ValueError:
+                        wait = 0
+                    self.cool[ck] = time.time() + (3600 if h.code in (401, 403, 404) else max(wait, 90) if h.code == 429 else 60)
+                    self._note(e, False)
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as ex:
-                    raise RuntimeError(f"offline ({type(ex).__name__})")   # network problem: don't punish the models
+                    net_err += 1
+                    err = f"{type(ex).__name__}"
+                    if net_err >= 2:                                   # two providers unreachable in a row = we're offline
+                        raise RuntimeError(f"offline ({type(ex).__name__})")
                 except Exception as ex:
                     err = f'{e["model"]}: {type(ex).__name__}'
-                    self.cool[ck] = time.time() + 60
+                    self.cool[ck] = time.time() + 120
+                    self._note(e, False)
+        if net_err and not tried - net_err:
+            raise RuntimeError(f"offline ({err})")
         raise RuntimeError("all cloud models failed (" + str(err) + ")")
 
     async def vision(self, question, b64_jpeg):
